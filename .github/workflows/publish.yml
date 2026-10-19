@@ -1,0 +1,47 @@
+name: Publish inert CredScope OCI fixture
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Publish V1 first; V2 only after the monitor is READY
+        required: true
+        type: choice
+        options: [V1, V2]
+permissions:
+  contents: read
+  packages: write
+concurrency:
+  group: credscope-r20-fixture-publication
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      FIXTURE_VERSION: ${{ inputs.version }}
+      IMAGE: ghcr.io/wanru463-pixel/credscope-oci-public-test:r20-controlled
+    steps:
+      - name: Fetch only this public test repository and verify the inert builder
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "wanru463-pixel/credscope-oci-public-test"
+          git init source
+          git -C source remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          git -C source fetch --depth 1 origin "$GITHUB_SHA"
+          git -C source checkout --detach FETCH_HEAD
+          printf '19d9e99beff56397f293f320a547424f4447f4bc405e37d034133a4760df8302  source/build_image.py\n' | sha256sum --check
+          python3 source/build_image.py --version "$FIXTURE_VERSION" --out "$RUNNER_TEMP/r20-build"
+          docker load --input "$RUNNER_TEMP/r20-build/docker-image.tar"
+      - name: Push only the dedicated inert test image
+        shell: bash
+        env:
+          GHCR_WRITE_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          export DOCKER_CONFIG="$RUNNER_TEMP/credscope-r20-auth"
+          mkdir -p "$DOCKER_CONFIG"
+          chmod 700 "$DOCKER_CONFIG"
+          trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+          printf '%s' "$GHCR_WRITE_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker push "$IMAGE"
